@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Il2CppInterop.Runtime.InteropTypes.Arrays;
 using MoonCleaners;
 using MoonCubeCopy.Core;
 using UnityEngine;
@@ -8,14 +9,15 @@ namespace MoonCubeCopy.Plugin;
 
 /// <summary>
 /// Creates ghost preview meshes for a schematic — the transparent overlay shown before placing.
-/// Belt preview uses segment-based rendering to avoid Il2CppStructArray crash.
+///
+/// FIX (bud3699): Il2CppStructArray must be constructed with (long) not (IntPtr).
+/// (IntPtr) wraps a native pointer at the address = count, causing AccessViolation.
+/// (long) properly allocates memory for the array.
 /// </summary>
 public static class GhostModel
 {
     /// <summary>
-    /// Build a preview mesh for a single belt, rendering via waypoints as separate segments.
-    /// Each segment is a straight piece of conveyor mesh — this avoids passing
-    /// Il2CppStructArray&lt;Vector3&gt; to MoonConveyorPath which causes AccessViolationException.
+    /// Build a preview mesh for a single belt, now with proper Via waypoint support.
     /// </summary>
     public static List<Mesh> BeltBar(Belt b, Vector3 origin, Quaternion rotation)
     {
@@ -26,39 +28,57 @@ public static class GhostModel
 
         Vector3 V3(double[] p) => new((float)p[0], (float)p[1], (float)p[2]);
 
+        var startPos = origin + rotation * V3(b.Start);
+        var endPos = origin + rotation * V3(b.End);
+        var startDir = (rotation * V3(b.StartDirection)).normalized;
+        var endDir = (rotation * V3(b.EndDirection)).normalized;
+        var up = origin.normalized;
+
         bool hasVia = b.Via.Count > 0 && b.Via.Count == b.ViaDirections.Count;
 
-        // Build list of all points along the belt: start, via1, via2, ..., end
-        var pts = new List<Vector3> { V3(b.Start) };
-        var dirs = new List<Vector3> { V3(b.StartDirection) };
-
-        if (hasVia)
+        try
         {
-            for (int vi = 0; vi < b.Via.Count; vi++)
+            Il2CppStructArray<Vector3> viaArray = null;
+            Il2CppStructArray<Vector3> viaDirArray = null;
+
+            if (hasVia)
             {
-                pts.Add(V3(b.Via[vi]));
-                dirs.Add(V3(b.ViaDirections[vi]));
+                // FIX: use (long) instead of (IntPtr) to properly allocate memory
+                viaArray = new Il2CppStructArray<Vector3>((long)b.Via.Count);
+                viaDirArray = new Il2CppStructArray<Vector3>((long)b.ViaDirections.Count);
+
+                for (int i = 0; i < b.Via.Count; i++)
+                {
+                    viaArray[i] = origin + rotation * V3(b.Via[i]);
+                    viaDirArray[i] = (rotation * V3(b.ViaDirections[i])).normalized;
+                }
             }
+
+            var gravityPos = startPos - up * 10000f;
+            var path = new MoonConveyorPath(
+                startPos, startDir, endPos, endDir,
+                gravityPos, up, up,
+                viaArray, viaDirArray);
+
+            var mesh = new Mesh();
+            var materials = new List<Material>();
+            MoonConveyorMesh.Build(mesh, materials, path, kit,
+                default, default, Vector3.zero, false, false, null, null);
+
+            meshes.Add(mesh);
         }
-
-        pts.Add(V3(b.End));
-        dirs.Add(V3(b.EndDirection));
-
-        // Render each segment separately — no Via arrays passed to MoonConveyorPath
-        for (int k = 0; k + 1 < pts.Count; k++)
+        catch (Exception ex)
         {
-            var s = origin + rotation * pts[k];
-            var e = origin + rotation * pts[k + 1];
-            var sd = (rotation * dirs[k]).normalized;
-            var ed = (rotation * dirs[k + 1]).normalized;
+            Plugin.Log.LogWarning($"Belt preview failed: {ex.Message}");
 
+            // Fallback: render without via (straight line)
             try
             {
-                // Create path WITHOUT via (null, null) — safe, no crash
-                var gravityPos = s - Vector3.up * 10000f;
-                var path = new MoonConveyorPath(s, sd, e, ed,
-                    gravityPos, Vector3.up, Vector3.up,
-                    null, null); // ← No via arrays! This is the crash fix.
+                var gravityPos = startPos - up * 10000f;
+                var path = new MoonConveyorPath(
+                    startPos, startDir, endPos, endDir,
+                    gravityPos, up, up,
+                    null, null);
 
                 var mesh = new Mesh();
                 var materials = new List<Material>();
@@ -67,9 +87,9 @@ public static class GhostModel
 
                 meshes.Add(mesh);
             }
-            catch (Exception ex)
+            catch (Exception ex2)
             {
-                Plugin.Log.LogWarning($"Belt preview segment {k} failed: {ex.Message}");
+                Plugin.Log.LogWarning($"Belt preview fallback also failed: {ex2.Message}");
             }
         }
 

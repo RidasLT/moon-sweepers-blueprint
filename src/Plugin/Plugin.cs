@@ -10,7 +10,7 @@ namespace MoonCubeCopy.Plugin;
 [BepInPlugin("com.ridas.moonsweepersblueprint", "Moon Sweepers Blueprint", ModVersion)]
 public class Plugin : BasePlugin
 {
-    public const string ModVersion = "1.0.38";
+    public const string ModVersion = "1.0.39";
 
     internal static ManualLogSource Log { get; private set; } = null!;
     internal static string SchematicDirectory { get; private set; } = null!;
